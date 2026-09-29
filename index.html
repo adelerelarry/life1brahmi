@@ -87,9 +87,7 @@
     background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='9'><path d='M1 1l6 6 6-6' stroke='%232b2e6f' stroke-width='1.6' fill='none' fill-rule='evenodd' stroke-linecap='round' stroke-linejoin='round'/></svg>");
     background-repeat:no-repeat;
     background-position:right 14px center;
-    /* FIX: no more teal-by-default; color rule above already forces black */
   }
-  /* Style just the "Select..." placeholder option a bit lighter, purely cosmetic */
   select option[value=""]{
     color:#8a8a8a;
   }
@@ -170,8 +168,17 @@
   <div class="error-msg" id="errorMsg">Please fill in all required fields.</div>
 
   <!--
+    Web3Forms requires this access key on every submission.
+    Get yours free at https://web3forms.com.
+  -->
+  <input type="hidden" name="access_key" value="98d024f6-e8ad-4fd1-9c66-52a47f12a38e">
+
+  <!-- Optional Web3Forms field: customize the notification email subject -->
+  <input type="hidden" name="subject" value="New order — life1brahmi">
+
+  <!--
     HIDDEN PRODUCT FIELD
-    This travels with every submission to Formspree (so it shows up in your
+    This travels with every submission (so it shows up in your
     email/backend), but it is never rendered on the page, so the customer
     never sees it. Just change the value to whatever product/SKU/offer name
     you want tagged on this particular landing page.
@@ -230,7 +237,6 @@
       <option value="" disabled selected>Select gender...</option>
       <option>Male</option>
       <option>Female</option>
-     
     </select>
   </div>
 
@@ -290,11 +296,13 @@
 </form>
 
 <script>
-  // ====== SETUP: paste your Formspree endpoint below ======
-  // 1. Go to https://formspree.io and create a free account.
-  // 2. Create a new form, it gives you a URL like https://formspree.io/f/xxxxabcd
-  // 3. Paste that URL as the value of FORMSPREE_ENDPOINT below.
-  const FORMSPREE_ENDPOINT = "https://formspree.io/f/xvzenyvo";
+  // ====== SETUP: Web3Forms ======
+  // 1. Go to https://web3forms.com and generate a free Access Key.
+  // 2. Paste that key into the hidden "access_key" input above AND into
+  //    WEB3FORMS_ACCESS_KEY below (kept in sync so the retry/abandon logic
+  //    below can build its own FormData when the form itself isn't handy).
+  const WEB3FORMS_ACCESS_KEY = "98d024f6-e8ad-4fd1-9c66-52a47f12a38e";
+  const WEB3FORMS_ENDPOINT = "https://api.web3forms.com/submit";
   // ==========================================================
 
   const THANK_YOU_URL = 'https://life1.highbpdbhub.xyz/thank-you/';
@@ -308,7 +316,11 @@
   let orderSubmitted = false;   // becomes true once a real submit succeeds/queues
   let abandonSent = false;      // guards against sending the abandoned-cart ping twice
 
-  // FIX: this form is meant to be embedded (iframe) inside your landing page.
+  function isKeyConfigured() {
+    return WEB3FORMS_ACCESS_KEY && !WEB3FORMS_ACCESS_KEY.includes('YOUR_WEB3FORMS_ACCESS_KEY');
+  }
+
+  // This form is meant to be embedded (iframe) inside your landing page.
   // window.location.href only redirects the iframe itself, not the visible
   // page, which is why "nothing happened" on submit. This redirects the
   // TOP browser window instead, with a safe fallback.
@@ -324,21 +336,30 @@
     window.location.href = THANK_YOU_URL;
   }
 
+  // Web3Forms wants JSON (or FormData both work) and returns { success: true/false, message }
+  async function postToWeb3Forms(fieldsObject) {
+    const res = await fetch(WEB3FORMS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(fieldsObject)
+    });
+    const json = await res.json().catch(() => ({ success: false }));
+    if (!res.ok || !json.success) throw new Error(json.message || 'Submission failed');
+    return json;
+  }
+
   // ---------- Retry queue: resend anything that failed earlier due to network issues ----------
   async function flushPendingOrders() {
     let pending = [];
     try { pending = JSON.parse(localStorage.getItem('pendingOrders') || '[]'); } catch (err) { pending = []; }
-    if (!pending.length || FORMSPREE_ENDPOINT.includes('YOUR_FORM_ID')) return;
+    if (!pending.length || !isKeyConfigured()) return;
 
     const stillPending = [];
     for (const record of pending) {
       try {
-        const fd = new FormData();
-        Object.entries(record).forEach(([k, v]) => fd.append(k, v));
-        const res = await fetch(FORMSPREE_ENDPOINT, { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } });
-        if (!res.ok) stillPending.push(record);
+        await postToWeb3Forms({ ...record, access_key: WEB3FORMS_ACCESS_KEY });
       } catch (err) {
-        stillPending.push(record); // still no network, keep for next time
+        stillPending.push(record); // still failing, keep for next time
       }
     }
     localStorage.setItem('pendingOrders', JSON.stringify(stillPending));
@@ -348,7 +369,7 @@
   // ---------- Abandoned cart recovery: they filled it in but left without submitting ----------
   function sendAbandonedCart() {
     if (orderSubmitted || abandonSent) return;
-    if (FORMSPREE_ENDPOINT.includes('YOUR_FORM_ID')) return;
+    if (!isKeyConfigured()) return;
     // Only counts as an abandoned lead once they've given at least a valid phone + address
     const phoneOk = phoneEl.value.replace(/\D/g, '').length === 11;
     const addressOk = addressEl.value.trim().length > 0;
@@ -357,8 +378,9 @@
     abandonSent = true;
     const data = new FormData(form);
     data.append('Status', 'Abandoned Cart - did not complete submission');
-    data.append('_subject', 'Abandoned order form');
-    navigator.sendBeacon(FORMSPREE_ENDPOINT, data);
+    data.append('subject', 'Abandoned order form');
+    // sendBeacon needs FormData/Blob, not JSON, and Web3Forms accepts FormData too
+    navigator.sendBeacon(WEB3FORMS_ENDPOINT, data);
   }
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') sendAbandonedCart();
@@ -393,18 +415,18 @@
     }
 
     const data = new FormData(form);
+    const fieldsObject = Object.fromEntries(data.entries());
 
     // Keep a local backup copy too (visible only on this device, as a safety net)
     try {
-      const record = Object.fromEntries(data.entries());
-      record._submittedAt = new Date().toISOString();
+      const record = { ...fieldsObject, _submittedAt: new Date().toISOString() };
       const existing = JSON.parse(localStorage.getItem('orders') || '[]');
       existing.push(record);
       localStorage.setItem('orders', JSON.stringify(existing));
     } catch (err) { /* ignore storage errors */ }
 
-    if (FORMSPREE_ENDPOINT.includes('YOUR_FORM_ID')) {
-      // No email endpoint configured yet — still let the demo proceed to thank-you page
+    if (!isKeyConfigured()) {
+      // No access key configured yet — still let the demo proceed to thank-you page
       orderSubmitted = true;
       redirectToThankYou();
       return;
@@ -414,25 +436,15 @@
     submitBtn.textContent = 'Submitting...';
 
     try {
-      const res = await fetch(FORMSPREE_ENDPOINT, {
-        method: 'POST',
-        body: data,
-        headers: { 'Accept': 'application/json' }
-      });
-      if (res.ok) {
-        orderSubmitted = true;
-        redirectToThankYou();
-      } else {
-        throw new Error('Submission failed');
-      }
+      await postToWeb3Forms(fieldsObject);
+      orderSubmitted = true;
+      redirectToThankYou();
     } catch (err) {
-      // Network issue (or Formspree unreachable): queue it so it auto-retries next visit,
+      // Network issue (or Web3Forms unreachable): queue it so it auto-retries next visit,
       // but still take them to the thank-you page since we captured their order.
       try {
-        const record = Object.fromEntries(data.entries());
-        record._queuedAt = new Date().toISOString();
         const pending = JSON.parse(localStorage.getItem('pendingOrders') || '[]');
-        pending.push(record);
+        pending.push({ ...fieldsObject, _queuedAt: new Date().toISOString() });
         localStorage.setItem('pendingOrders', JSON.stringify(pending));
       } catch (storageErr) { /* ignore */ }
 
